@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Gidley - Return Rate</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #fff; color: #111; padding: 24px; max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 18px; font-weight: 500; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 20px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 12px; font-size: 12px; color: #555; }
+  .legend-item { display: flex; align-items: center; gap: 5px; }
+  .swatch { width: 26px; height: 3px; display: inline-block; }
+  .swatch-dashed { border-top: 2px dashed; height: 0; margin-top: 1px; }
+  .chart-wrap { position: relative; width: 100%; height: 380px; }
+  .loading { display: flex; align-items: center; justify-content: center; height: 380px; font-size: 14px; color: #888; }
+  .error { color: #c0392b; font-size: 13px; padding: 12px; background: #fdf0ee; border-radius: 6px; margin-top: 12px; }
+  .footer { font-size: 11px; color: #aaa; margin-top: 10px; }
+  .stats-row { display: flex; flex-direction: column; gap: 16px; margin-top: 24px; }
+  .stats-pair { display: flex; gap: 16px; }
+  .stat-card { flex: 1; border: 1px solid #e8e8e8; border-radius: 10px; padding: 18px 22px; background: #fafafa; }
+  .stat-label { font-size: 12px; color: #888; margin-bottom: 6px; letter-spacing: 0.02em; }
+  .stat-value { font-size: 42px; font-weight: 600; color: #111; line-height: 1; }
+  .stat-sub { font-size: 12px; color: #aaa; margin-top: 6px; }
+  .stat-delta { display: inline-block; margin-top: 8px; font-size: 13px; font-weight: 500; padding: 2px 8px; border-radius: 4px; }
+  .stat-delta.up   { background: #e6f4ed; color: #1d8348; }
+  .stat-delta.down { background: #fdf0ee; color: #c0392b; }
+  .stat-delta.flat { background: #f2f2f2; color: #666; }
+</style>
+</head>
+<body>
+<h1>The Gidley - guest return rate</h1>
+<p class="subtitle">Completed reservations only · guests matched by mobile number · updated live from Supabase</p>
+<div class="legend">
+  <span class="legend-item"><span class="swatch" style="background:#3266ad"></span> 12m return %</span>
+  <span class="legend-item"><span class="swatch" style="background:#1D9E75"></span> 6m return %</span>
+  <span class="legend-item"><span class="swatch" style="background:#D85A30"></span> 3m return %</span>
+  <span class="legend-item"><span class="swatch" style="background:#888780"></span> 1m return %</span>
+  <span class="legend-item"><span class="swatch swatch-dashed" style="border-color:#111;width:26px;"></span> Total reservations (right)</span>
+  <span class="legend-item"><span class="swatch swatch-dashed" style="border-color:#BA7517;width:26px;"></span> New guests (right)</span>
+</div>
+<div id="loading" class="loading">Loading data...</div>
+<div class="chart-wrap" id="chartWrap" style="display:none;"><canvas id="chart"></canvas></div>
+<div id="error" style="display:none;" class="error"></div>
+<div id="stats" class="stats-row" style="display:none;"></div>
+<p class="footer">Return rate = % of completed reservations where guest's mobile had appeared in a prior completed reservation. New guest = first-ever appearance of that mobile. Shaded bands = COVID closures.</p>
+<script>
+const SUPABASE_URL  = 'https://fppqqcpgpbdqshhldpth.supabase.co';
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZwcHFxY3BncGJkcXNoaGxkcHRoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEzMjc0NDYsImV4cCI6MjA5NjkwMzQ0Nn0._T8DALtq5nRQwj-fjPRWbNwhHX_Hv4TJT__tCdzhH8Q';
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function fmtLabel(ym) { const [y,m] = ym.split('-'); return MONTHS[+m-1]+' '+y; }
+async function load() {
+  try {
+    const client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    const { data: rows, error } = await client.rpc('get_gidley_return_rate');
+    if (error) throw new Error(error.message);
+    if (!rows || rows.length===0) throw new Error('No data returned');
+    const now = new Date();
+    const currentMonth = now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+    const completeRows = rows.filter(r => r.month < currentMonth && +r.total_matched >= 50);
+    if (completeRows.length > 0) {
+      const lr = completeRows[completeRows.length-1];
+      const lp = +lr.pct_12m, ll = fmtLabel(lr.month);
+      const pr = completeRows.slice(Math.max(0,completeRows.length-13),completeRows.length-1);
+      const pa = pr.length>0 ? pr.reduce((s,r)=>s+ +r.pct_12m,0)/pr.length : null;
+      const d = pa!==null ? lp-pa : null, dc = d===null?'flat':d>0.5?'up':d<-0.5?'down':'flat', ds = d>0?'+':'';
+      const ppl = pr.length>0 ? fmtLabel(pr[0].month)+' - '+fmtLabel(pr[pr.length-1].month) : '';
+      const lnp = +lr.total_matched>0 ? +lr.new_guests/+lr.total_matched*100 : null;
+      const pna = pr.length>0 ? pr.reduce((s,r)=>s+(+r.total_matched>0?+r.new_guests/+r.total_matched*100:0),0)/pr.length : null;
+      const nd = lnp!==null&&pna!==null?lnp-pna:null, ndc=nd===null?'flat':nd>0.5?'up':nd<-0.5?'down':'flat', nds=nd>0?'+':'';
+      document.getElementById('stats').style.display='flex';
+      document.getElementById('stats').innerHTML='<div class="stats-pair"><div class="stat-card"><div class="stat-label">12-MONTH RETURN RATE - '+ll.toUpperCase()+'</div><div class="stat-value">'+lp.toFixed(1)+'<span style="font-size:22px;font-weight:400;color:#888">%</span></div>'+(d!==null?'<span class="stat-delta '+dc+'">'+ds+d.toFixed(1)+'pp vs prior year avg</span>':'')+'</div><div class="stat-card"><div class="stat-label">12-MONTH RETURN RATE - PRIOR YEAR AVG</div><div class="stat-value">'+(pa!==null?pa.toFixed(1):'-')+'<span style="font-size:22px;font-weight:400;color:#888">%</span></div>'+(ppl?'<div class="stat-sub">'+ppl+'</div>':'')+'</div></div><div class="stats-pair"><div class="stat-card"><div class="stat-label">NEW GUESTS - '+ll.toUpperCase()+'</div><div class="stat-value">'+(lnp!==null?lnp.toFixed(1):'-')+'<span style="font-size:22px;font-weight:400;color:#888">%</span></div>'+(nd!==null?'<span class="stat-delta '+ndc+'">'+nds+nd.toFixed(1)+'pp vs prior year avg</span>':'')+'</div><div class="stat-card"><div class="stat-label">NEW GUESTS - PRIOR YEAR AVERAGE</div><div class="stat-value">'+(pna!==null?pna.toFixed(1):'-')+'<span style="font-size:22px;font-weight:400;color:#888">%</span></div>'+(ppl?'<div class="stat-sub">'+ppl+'</div>':'')+'</div></div>';
+    }
+    const LV=100, rk=rows.map(r=>r.month), lb=rows.map(r=>fmtLabel(r.month));
+    const d12=rows.map(r=>+r.total_matched<LV?null:+r.pct_12m), d6=rows.map(r=>+r.total_matched<LV?null:+r.pct_6m);
+    const d3=rows.map(r=>+r.total_matched<LV?null:+r.pct_3m), d1=rows.map(r=>+r.total_matched<LV?null:+r.pct_1m);
+    const tot=rows.map(r=>+r.total_completed<LV?null:+r.total_completed), ng=rows.map(r=>+r.total_matched<LV?null:+r.new_guests);
+    document.getElementById('loading').style.display='none';
+    document.getElementById('chartWrap').style.display='block';
+    const sp={id:'shade',beforeDraw(c){const{ctx,chartArea:ca,scales:sc}=c;if(!ca)return;[['2020-04','2020-06'],['2021-07','2021-10']].forEach(([f,t])=>{const fi=rk.indexOf(f),ti=rk.indexOf(t);if(fi<0||ti<0)return;ctx.save();ctx.fillStyle='rgba(136,135,128,0.12)';ctx.fillRect(sc.x.getPixelForValue(fi),ca.top,sc.x.getPixelForValue(ti)-sc.x.getPixelForValue(fi),ca.bottom-ca.top);ctx.restore();})}};
+    const mp={id:'mig',afterDraw(c){const{ctx,chartArea:ca,scales:sc}=c;if(!ca)return;const i=rk.indexOf('2023-08');if(i<0)return;const x=sc.x.getPixelForValue(i);ctx.save();ctx.strokeStyle='rgba(136,135,128,0.45)';ctx.setLineDash([4,3]);ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x,ca.top);ctx.lineTo(x,ca.bottom);ctx.stroke();ctx.setLineDash([]);ctx.font='10px sans-serif';ctx.fillStyle='rgba(100,100,100,0.8)';ctx.textAlign='left';ctx.fillText('SevenRooms migration',x+4,ca.top+13);ctx.restore()}};
+    new Chart(document.getElementById('chart'),{type:'line',plugins:[sp,mp],data:{labels:lb,datasets:[{label:'12m return %',data:d12,borderColor:'#3266ad',borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:0.3,fill:false,spanGaps:false,yAxisID:'yPct'},{label:'6m return %',data:d6,borderColor:'#1D9E75',borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:0.3,fill:false,spanGaps:false,yAxisID:'yPct'},{label:'3m return %',data:d3,borderColor:'#D85A30',borderWidth:2,pointRadius:0,pointHoverRadius:4,tension:0.3,fill:false,spanGaps:false,yAxisID:'yPct'},{label:'1m return %',data:d1,borderColor:'#888780',borderWidth:1.5,pointRadius:0,pointHoverRadius:4,tension:0.3,fill:false,spanGaps:false,yAxisID:'yPct',borderDash:[4,3]},{label:'Total reservations',data:tot,borderColor:'#111111',backgroundColor:'rgba(0,0,0,0.03)',borderWidth:2,borderDash:[6,3],pointRadius:0,pointHoverRadius:4,tension:0.3,fill:true,spanGaps:false,yAxisID:'yCount'},{label:'New guests',data:ng,borderColor:'#BA7517',backgroundColor:'rgba(186,117,23,0.05)',borderWidth:1.5,borderDash:[5,4],pointRadius:0,pointHoverRadius:4,tension:0.3,fill:true,spanGaps:false,yAxisID:'yCount'}]},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},plugins:{legend:{display:false},tooltip:{backgroundColor:'rgba(20,20,20,0.88)',titleFont:{size:13,weight:'600'},bodyFont:{size:12},padding:12,callbacks:{title:i=>i[0].label,label:i=>{if(i.dataset.yAxisID==='yCount')return'  '+i.dataset.label+': '+(i.parsed.y!=null?Math.round(i.parsed.y):'n/a');return'  '+i.dataset.label+': '+(i.parsed.y!=null?i.parsed.y.toFixed(1)+'%':'n/a')}}}},scales:{x:{ticks:{maxTicksLimit:14,maxRotation:45,font:{size:11},color:'#888'},grid:{display:false}},yPct:{type:'linear',position:'left',min:0,max:35,ticks:{callback:v=>v+'%',font:{size:11},color:'#555',stepSize:5},grid:{color:'rgba(0,0,0,0.07)'}},yCount:{type:'linear',position:'right',min:0,max:1600,ticks:{callback:v=>v,font:{size:11},color:'#888',stepSize:200},grid:{display:false}}}}});
+  } catch(err) {
+    document.getElementById('loading').style.display='none';
+    const el=document.getElementById('error');el.style.display='block';el.textContent='Could not load data: '+err.message;
+  }
+}
+load();
+</script>
+</body>
+</html>
